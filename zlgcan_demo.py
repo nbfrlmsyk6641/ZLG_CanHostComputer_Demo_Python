@@ -13,6 +13,8 @@
 #  Language: Python 3.6
 #  ------------------------------------------------------------------
 #
+
+# 导入ZLG的库函数、Python的GUI库、线程库、时间库、JSON库
 from zlgcan import *
 import tkinter as tk
 from tkinter import ttk
@@ -21,6 +23,7 @@ import threading
 import time
 import json
 
+# 全局常量定义（界面布局、程序逻辑等）
 GRPBOX_WIDTH    = 200
 MSGCNT_WIDTH    = 50
 MSGID_WIDTH     = 80
@@ -686,8 +689,11 @@ class ZCAN_Demo(tk.Tk):
         self.ChnInfoUpdate(self._isOpen)
         self.ChnInfoDisplay(self._isOpen)
 
+    # 连接CAN设备的函数。通过按下打开按钮来进行CAN设备的连接
     def BtnOpenCAN_Click(self):
         if self._isChnOpen:
+            # 这个if下的代码是关闭CAN通道的代码
+
             #wait read_thread exit
             self._terminated = True
             self._read_thread.join(0.1)
@@ -699,12 +705,15 @@ class ZCAN_Demo(tk.Tk):
             if self._is_sending:
                 self.btnMsgSend.invoke()
 
-            #Close channel
+            #Close channel，ResetCAN是ZLG的库函数，用于复位CAN通道
             self._zcan.ResetCAN(self._can_handle)
+            # 更新UI界面对应按钮的状态，将关闭按钮变为打开按钮
             self.strvCANCtrl.set("打开")
             self._isChnOpen = False
             self.btnMsgSend["state"] = tk.DISABLED
         else:
+            # 这个else下的代码是打开CAN通道的代码
+
             #Initial channel
            
             chn_cfg = ZCAN_CHANNEL_INIT_CONFIG()
@@ -729,21 +738,22 @@ class ZCAN_Demo(tk.Tk):
             if self._can_handle == INVALID_CHANNEL_HANDLE:
                 messagebox.showerror(title="打开通道", message="初始化通道失败!")
                 return 
-
+            # StartCAN是ZLG的库函数，用于启动CAN通道
             ret = self._zcan.StartCAN(self._can_handle)
             if ret != ZCAN_STATUS_OK: 
                 messagebox.showerror(title="打开通道", message="打开通道失败!")
                 return 
 
-            #start send thread
+            #start send thread，启动定时发送线程
             self._send_thread = PeriodSendThread(self.PeriodSend)
             self._send_thread.start()
 
-            #start receive thread
+            #start receive thread，启动接收报文线程，这个线程在后台不断读取接收缓冲区的报文，没有报文时则进行休眠
             self._terminated = False
             self._read_thread = threading.Thread(None, target=self.MsgReadThreadFunc)
             self._read_thread.start()
-
+            
+            # 更新UI界面对应按钮的状态，将打开按钮变为关闭按钮
             self.strvCANCtrl.set("关闭")
             self._isChnOpen = True 
             self.btnMsgSend["state"] = tk.NORMAL
@@ -776,6 +786,7 @@ class ZCAN_Demo(tk.Tk):
         if tmp >= len(self.cmbMsgLen["value"]):
             self.cmbMsgLen.current(len(self.cmbMsgLen["value"]) - 1)            
 
+    # 发送报文的函数，通过按下发送按钮来进行报文的发送
     def BtnSendMsg_Click(self): 
         if not self._is_sending:
             is_canfd_msg = True if self.cmbMsgCANFD.current() > 0 else False
