@@ -505,20 +505,23 @@ class ZCAN_Demo(tk.Tk):
             self.cmbResEnable["state"] = tk.DISABLED
     
     def MsgReadThreadFunc(self):
+        # try之后的代码用于读取新到的报文
         try:
             while not self._terminated:
+                # 查询有几条未读CAN报文
                 can_num = self._zcan.GetReceiveNum(self._can_handle, ZCAN_TYPE_CAN)
                 canfd_num = self._zcan.GetReceiveNum(self._can_handle, ZCAN_TYPE_CANFD)
                 if not can_num and not canfd_num:
-                    time.sleep(0.005) #wait 5ms  
+                    time.sleep(0.005) # 没有新来的CAN报文，休眠5ms，再去查询  
                     continue
 
                 if can_num:
                     while can_num and not self._terminated:
+                        # 每次最多处理10条CAN报文
                         read_cnt = MAX_RCV_NUM if can_num >= MAX_RCV_NUM else can_num
                         can_msgs, act_num = self._zcan.Receive(self._can_handle, read_cnt, MAX_RCV_NUM)
                         if act_num: 
-                            #update data
+                            # 更新UI数据显示，接受帧数等于当前帧数+实际接收帧数，并调用ViewDataUpdate函数更新数据显示
                             self._rx_cnt += act_num 
                             self.strvRxCnt.set(str(self._rx_cnt))
                             self.ViewDataUpdate(can_msgs, act_num, False, False)
@@ -789,7 +792,9 @@ class ZCAN_Demo(tk.Tk):
     # 发送报文的函数，通过按下发送按钮来进行报文的发送
     def BtnSendMsg_Click(self): 
         if not self._is_sending:
+            # 以下代码是开始发送的相关逻辑
             is_canfd_msg = True if self.cmbMsgCANFD.current() > 0 else False
+            # 确定是CAN FD报文还是经典CAN报文
             if is_canfd_msg:
                 msg = ZCAN_TransmitFD_Data()
             else:
