@@ -154,15 +154,25 @@ class ZCAN_Demo(tk.Tk):
         self.gbDevInfo.grid_propagate(0)
         self.DevInfoWidgetsInit()
 
+        self.gbCustomButtons = tk.LabelFrame(self._dev_frame, height=50, width=GRPBOX_WIDTH, text="自定义发送")
+        self.gbCustomButtons.grid_propagate(0) # 防止内部控件改变Frame大小
+        self.gbCustomButtons.grid(row=3, column=0, padx=2, pady=5, sticky=tk.NSEW) # 放在第3行
+
+        # 创建ID 0x10的发送按钮
+        self.btnSendID10 = ttk.Button(self.gbCustomButtons, text="10",
+                                      command=self.BtnSendID10_Click) # 绑定点击事件
+        self.btnSendID10.grid(row=0, column=0, padx=5, pady=5) # 放置按钮
+        self.btnSendID10["state"] = tk.DISABLED # 初始状态禁用
+
         self.gbMsgDisplay = tk.LabelFrame(height=MSGVIEW_HEIGHT, width=MSGVIEW_WIDTH + 12, text="报文显示")
         self.gbMsgDisplay.grid(row=0, column=1, padx=2, pady=2, sticky=tk.NSEW)
         self.gbMsgDisplay.grid_propagate(0)
         self.MsgDisplayWidgetsInit()
 
-        self.gbMsgSend = tk.LabelFrame(heigh=SENDVIEW_HEIGHT, width=MSGVIEW_WIDTH + 12, text="报文发送")
-        self.gbMsgSend.grid(row=2, column=1, padx=2, pady=2, sticky=tk.NSEW)
-        self.gbMsgSend.grid_propagate(0)
-        self.MsgSendWidgetsInit()
+        # self.gbMsgSend = tk.LabelFrame(heigh=SENDVIEW_HEIGHT, width=MSGVIEW_WIDTH + 12, text="报文发送")
+        # self.gbMsgSend.grid(row=2, column=1, padx=2, pady=2, sticky=tk.NSEW)
+        # self.gbMsgSend.grid_propagate(0)
+        # self.MsgSendWidgetsInit()
 
     def DeviceInfoInit(self):
         self.cmbDevType["value"] = tuple([dev_name for dev_name in self._dev_info])
@@ -664,6 +674,7 @@ class ZCAN_Demo(tk.Tk):
             self.cmbDevType["state"] = "readonly"
             self.cmbDevIdx["state"] = "readonly"
             self._isOpen = False
+            self.btnSendID10["state"] = tk.DISABLED
         else:
             self._cur_dev_info = self._dev_info[self.cmbDevType.get()]
 
@@ -714,6 +725,7 @@ class ZCAN_Demo(tk.Tk):
             self.strvCANCtrl.set("打开")
             self._isChnOpen = False
             self.btnMsgSend["state"] = tk.DISABLED
+            self.btnSendID10["state"] = tk.DISABLED
         else:
             # 这个else下的代码是打开CAN通道的代码
 
@@ -760,6 +772,7 @@ class ZCAN_Demo(tk.Tk):
             self.strvCANCtrl.set("关闭")
             self._isChnOpen = True 
             self.btnMsgSend["state"] = tk.NORMAL
+            self.btnSendID10["state"] = tk.NORMAL
         self.ChnInfoDisplay(not self._isChnOpen)
 
     def BtnClrCnt_Click(self):
@@ -838,6 +851,48 @@ class ZCAN_Demo(tk.Tk):
             self.strvSend.set("停止发送")
         else:
             self.PeriodSendComplete()
+    
+    def BtnSendID10_Click(self):
+        """
+        处理点击 "10" 按钮的事件，发送固定的CAN报文 (ID=0x10)。
+        """
+        # 1. 检查CAN通道是否已打开，如果未打开则不执行任何操作
+        if not self._isChnOpen:
+            messagebox.showwarning(title="发送错误", message="请先打开CAN通道！")
+            return
+
+        # 2. 构建要发送的CAN报文结构体
+        #    根据要求: ID=0x10, 标准帧, 数据帧, DLC=8, 数据全0
+        msg = ZCAN_Transmit_Data()
+        msg.transmit_type = 0 # 0: 正常发送 (Normal Transmit)
+        msg.frame.eff = 0 # 0: 标准帧 (Standard Frame)
+        msg.frame.rtr = 0 # 0: 数据帧 (Data Frame)
+        msg.frame.can_id = 0x10 # 设置帧ID为0x10
+        msg.frame.can_dlc = 8   # 设置数据长度为8
+
+        # 填充数据要发送的数据，模仿UDS诊断服务中的10服务
+        msg.frame.data[0] = 0x02
+        msg.frame.data[1] = 0x10
+        msg.frame.data[2] = 0x03
+        msg.frame.data[3] = 0xCC
+        msg.frame.data[4] = 0xCC
+        msg.frame.data[5] = 0xCC
+        msg.frame.data[6] = 0xCC
+        msg.frame.data[7] = 0xCC
+
+        # 3. 调用底层发送函数发送这一帧报文
+        #    参数: 通道句柄, 报文结构体(或数组), 发送数量(这里是1)
+        ret = self._zcan.Transmit(self._can_handle, msg, 1)
+
+        # 4. (可选但推荐) 处理发送结果并提供反馈
+        if ret == 1: # 假设1代表发送成功 (需要参照zlgcan库的具体定义)
+            # 更新发送计数器并在界面显示
+            self._tx_cnt += 1
+            self.strvTxCnt.set(str(self._tx_cnt))
+            # 在报文显示列表中也显示刚刚发送的这一帧
+            self.ViewDataUpdate( [msg] , 1, is_canfd=False, is_send=True)
+        else:
+            messagebox.showerror(title="发送失败", message="发送CAN报文失败！错误码: " + str(ret))
 
 if __name__ == "__main__":
     demo = ZCAN_Demo()
