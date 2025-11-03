@@ -4,9 +4,12 @@ from zlgcan import *
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
+from tkinter import filedialog
 import threading
+import os
 import time
 import json
+import binascii
 
 # --- 全局常量 (从Demo中保留，但移除了发送框的高度) ---
 GRPBOX_WIDTH    = 200
@@ -89,53 +92,45 @@ class IAP_Tool_V1(tk.Tk):
 
         self._tx_cnt = 0
 
+        # 用于存储IAP固件信息的变量
+        self._firmware_path = "" # 存储 .bin 文件的完整路径
+        self._firmware_size = 0  # 存储 .bin 文件的大小
+
+        self._firmware_crc32 = 0
+
     def WidgetsInit(self):
         """
         初始化所有GUI界面组件 (使用修正后的Grid布局)
         """
-        # ---【修改】---
-        # 不再使用 _dev_frame，我们直接在主窗口上布局
-        # self._dev_frame = tk.Frame(self)
-        # self._dev_frame.grid(row=0, column=0, padx=2, pady=2, sticky=tk.NSEW)
-
         # 1. 设备选择
-        # ---【修改】--- 直接在主窗口(self)上grid
         self.gbDevConnect = tk.LabelFrame(self, height=100, width=GRPBOX_WIDTH, text="设备选择")
         self.gbDevConnect.grid_propagate(0)
-        # ---【修改】--- 布局在 (row=0, column=0)
         self.gbDevConnect.grid(row=0, column=0, padx=2, pady=2, sticky=tk.NW) 
         self.DevConnectWidgetsInit()
 
         # 2. 通道配置
-        # ---【修改】--- 直接在主窗口(self)上grid
         self.gbCANCfg = tk.LabelFrame(self, height=170, width=GRPBOX_WIDTH, text="通道配置")
         self.gbCANCfg.grid(row=1, column=0, padx=2, pady=2, sticky=tk.NW) 
         self.gbCANCfg.grid_propagate(0)
         self.CANChnWidgetsInit()
 
-        # 3. 设备信息 (保持为空)
-        # ---【修改】--- 直接在主窗口(self)上grid
-        self.gbDevInfo = tk.LabelFrame(self, height=230, width=GRPBOX_WIDTH, text="设备信息")
-        self.gbDevInfo.grid(row=2, column=0, padx=2, pady=2, sticky=tk.NW)
-        self.gbDevInfo.grid_propagate(0)
-        self.DevInfoWidgetsInit() 
+        # 3. 软件更新
+        self.gbIAP = tk.LabelFrame(self, width=GRPBOX_WIDTH, text="软件更新")
+        self.gbIAP.grid(row=2, column=0, padx=2, pady=2, sticky=tk.NW)
+        # self.gbIAP.grid_propagate(0)
+        self.SoftwareUpdateWidgetsInit()
 
         # 4. 报文显示
         self.gbMsgDisplay = tk.LabelFrame(self, height=MSGVIEW_HEIGHT, width=MSGVIEW_WIDTH + 12, text="报文显示")
-        # ---【修改】--- 
-        # 布局在 (row=0, column=1)，并且跨越2行 (rowspan=2)
-        # sticky=tk.NSEW 让它在垂直方向上填满分配到的空间
         self.gbMsgDisplay.grid(row=0, column=1, rowspan=2, padx=2, pady=2, sticky=tk.NSEW) 
         self.gbMsgDisplay.grid_propagate(0)
         self.MsgDisplayWidgetsInit()
         
         # 5. 精简的报文发送框
         self.gbCustomSend = tk.LabelFrame(self, height=SENDVIEW_HEIGHT, width=MSGVIEW_WIDTH + 12, text="CAN报文发送")
-        # ---【修改】--- 
-        # 布局在 (row=2, column=1)，与“设备信息”框底部对齐
         self.gbCustomSend.grid(row=2, column=1, padx=2, pady=2, sticky=tk.NSEW) 
         self.gbCustomSend.grid_propagate(0)
-        self.CustomSendWidgetsInit() # 调用新的函数来创建内部控件
+        self.CustomSendWidgetsInit()
 
     # --- 以下是各个区域的GUI控件创建函数 ---
     
@@ -236,6 +231,33 @@ class IAP_Tool_V1(tk.Tk):
         self.strvTxCnt.set("0")
         tk.Label(self.gbMsgDisplay, anchor=tk.W, width=5, textvariable=self.strvTxCnt).pack(side=tk.RIGHT)
         tk.Label(self.gbMsgDisplay, width=10, text="发送帧数:").pack(side=tk.RIGHT)
+    
+    def SoftwareUpdateWidgetsInit(self):
+        """
+        创建“软件更新”区域的GUI控件
+        """
+        # 1. 创建“选择文件”按钮
+        self.btnSelectFile = ttk.Button(self.gbIAP, text="选择固件", 
+                                        command=self.BtnSelectFile_Click)
+        self.btnSelectFile.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky=tk.EW)
+
+        # 2. 创建一个标签来显示文件名
+        tk.Label(self.gbIAP, anchor=tk.W, text="文件:").grid(row=1, column=0, sticky=tk.W, padx=5)
+        self.strvFilePath = tk.StringVar(value="尚未选择文件")
+        self.entryFilePath = ttk.Entry(self.gbIAP, textvariable=self.strvFilePath, width=20, state="readonly")
+        self.entryFilePath.grid(row=1, column=1, padx=5, pady=2, sticky=tk.W)
+
+        # 3. 创建一个标签来显示文件大小
+        tk.Label(self.gbIAP, anchor=tk.W, text="大小:").grid(row=2, column=0, sticky=tk.W, padx=5)
+        self.strvFileSize = tk.StringVar(value="0 字节")
+        self.entryFileSize = ttk.Entry(self.gbIAP, textvariable=self.strvFileSize, width=20, state="readonly")
+        self.entryFileSize.grid(row=2, column=1, padx=5, pady=2, sticky=tk.W)
+
+        # 4. 【新增】创建一个标签来显示CRC32
+        tk.Label(self.gbIAP, anchor=tk.W, text="CRC32:").grid(row=3, column=0, sticky=tk.W, padx=5)
+        self.strvFileCRC = tk.StringVar(value="N/A")
+        self.entryFileCRC = ttk.Entry(self.gbIAP, textvariable=self.strvFileCRC, width=20, state="readonly")
+        self.entryFileCRC.grid(row=3, column=1, padx=5, pady=2, sticky=tk.W)
 
 ###############################################################################
 ### Function (功能函数)
@@ -401,6 +423,61 @@ class IAP_Tool_V1(tk.Tk):
 ###############################################################################
 ### Event handers (事件处理函数)
 ###############################################################################
+
+    def BtnSelectFile_Click(self):
+        """
+        处理“选择固件”按钮点击事件
+        """
+        # 1. 弹出一个“打开文件”对话框
+        file_path = filedialog.askopenfilename(
+            title="请选择一个固件文件",
+            filetypes=[("Bin files", "*.bin"), ("All files", "*.*")]
+        )
+
+        # 2. 检查用户是否真的选择了一个文件（而不是点了“取消”）
+        if not file_path:
+            self.strvFilePath.set("已取消选择")
+            self.strvFileSize.set("0 字节")
+            self.strvFileCRC.set("N/A") # 【新增】重置CRC显示
+            self._firmware_path = ""
+            self._firmware_size = 0
+            self._firmware_crc32 = 0
+            return
+
+        # 3. 如果选择了文件，获取文件信息并更新GUI
+        try:
+            # 存储文件路径
+            self._firmware_path = file_path
+            
+            # 获取文件大小
+            self._firmware_size = os.path.getsize(file_path)
+
+            # 更新GUI上的路径和大小标签
+            self.strvFilePath.set(os.path.basename(file_path)) 
+            self.strvFileSize.set(f"{self._firmware_size} 字节")
+            
+            # --- 【新增】读取文件并计算CRC32 ---
+            with open(self._firmware_path, 'rb') as f:
+                firmware_data = f.read() # 读取文件全部内容
+            
+            # 计算CRC32
+            # & 0xFFFFFFFF 是为了确保得到一个正的32位无符号整数
+            crc_value = binascii.crc32(firmware_data) & 0xFFFFFFFF 
+            self._firmware_crc32 = crc_value
+            
+            # 更新GUI上的CRC32标签
+            # :08X 格式化为8位、补零的十六进制大写字符串
+            self.strvFileCRC.set(f"0x{crc_value:08X}")
+            
+        except Exception as e:
+            messagebox.showerror(title="文件错误", message=f"读取文件信息失败: {e}")
+            self._firmware_path = ""
+            self._firmware_size = 0
+            self._firmware_crc32 = 0
+            self.strvFilePath.set("读取失败")
+            self.strvFileSize.set("0 字节")
+            self.strvFileCRC.set("计算失败") # 【新增】更新CRC显示
+
     def Form_OnClosing(self):
         """
         处理窗口关闭事件
