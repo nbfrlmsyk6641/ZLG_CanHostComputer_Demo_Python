@@ -13,8 +13,6 @@
 #  Language: Python 3.6
 #  ------------------------------------------------------------------
 #
-
-# 导入ZLG的库函数、Python的GUI库、线程库、时间库、JSON库
 from zlgcan import *
 import tkinter as tk
 from tkinter import ttk
@@ -23,7 +21,6 @@ import threading
 import time
 import json
 
-# 全局常量定义（界面布局、程序逻辑等）
 GRPBOX_WIDTH    = 200
 MSGCNT_WIDTH    = 50
 MSGID_WIDTH     = 80
@@ -154,25 +151,15 @@ class ZCAN_Demo(tk.Tk):
         self.gbDevInfo.grid_propagate(0)
         self.DevInfoWidgetsInit()
 
-        self.gbCustomButtons = tk.LabelFrame(self._dev_frame, height=50, width=GRPBOX_WIDTH, text="自定义发送")
-        self.gbCustomButtons.grid_propagate(0) # 防止内部控件改变Frame大小
-        self.gbCustomButtons.grid(row=3, column=0, padx=2, pady=5, sticky=tk.NSEW) # 放在第3行
-
-        # 创建ID 0x10的发送按钮
-        self.btnSendID10 = ttk.Button(self.gbCustomButtons, text="10",
-                                      command=self.BtnSendID10_Click) # 绑定点击事件
-        self.btnSendID10.grid(row=0, column=0, padx=5, pady=5) # 放置按钮
-        self.btnSendID10["state"] = tk.DISABLED # 初始状态禁用
-
         self.gbMsgDisplay = tk.LabelFrame(height=MSGVIEW_HEIGHT, width=MSGVIEW_WIDTH + 12, text="报文显示")
         self.gbMsgDisplay.grid(row=0, column=1, padx=2, pady=2, sticky=tk.NSEW)
         self.gbMsgDisplay.grid_propagate(0)
         self.MsgDisplayWidgetsInit()
 
-        # self.gbMsgSend = tk.LabelFrame(heigh=SENDVIEW_HEIGHT, width=MSGVIEW_WIDTH + 12, text="报文发送")
-        # self.gbMsgSend.grid(row=2, column=1, padx=2, pady=2, sticky=tk.NSEW)
-        # self.gbMsgSend.grid_propagate(0)
-        # self.MsgSendWidgetsInit()
+        self.gbMsgSend = tk.LabelFrame(heigh=SENDVIEW_HEIGHT, width=MSGVIEW_WIDTH + 12, text="报文发送")
+        self.gbMsgSend.grid(row=2, column=1, padx=2, pady=2, sticky=tk.NSEW)
+        self.gbMsgSend.grid_propagate(0)
+        self.MsgSendWidgetsInit()
 
     def DeviceInfoInit(self):
         self.cmbDevType["value"] = tuple([dev_name for dev_name in self._dev_info])
@@ -515,23 +502,20 @@ class ZCAN_Demo(tk.Tk):
             self.cmbResEnable["state"] = tk.DISABLED
     
     def MsgReadThreadFunc(self):
-        # try之后的代码用于读取新到的报文
         try:
             while not self._terminated:
-                # 查询有几条未读CAN报文
                 can_num = self._zcan.GetReceiveNum(self._can_handle, ZCAN_TYPE_CAN)
                 canfd_num = self._zcan.GetReceiveNum(self._can_handle, ZCAN_TYPE_CANFD)
                 if not can_num and not canfd_num:
-                    time.sleep(0.005) # 没有新来的CAN报文，休眠5ms，再去查询  
+                    time.sleep(0.005) #wait 5ms  
                     continue
 
                 if can_num:
                     while can_num and not self._terminated:
-                        # 每次最多处理10条CAN报文
                         read_cnt = MAX_RCV_NUM if can_num >= MAX_RCV_NUM else can_num
                         can_msgs, act_num = self._zcan.Receive(self._can_handle, read_cnt, MAX_RCV_NUM)
                         if act_num: 
-                            # 更新UI数据显示，接受帧数等于当前帧数+实际接收帧数，并调用ViewDataUpdate函数更新数据显示
+                            #update data
                             self._rx_cnt += act_num 
                             self.strvRxCnt.set(str(self._rx_cnt))
                             self.ViewDataUpdate(can_msgs, act_num, False, False)
@@ -674,7 +658,6 @@ class ZCAN_Demo(tk.Tk):
             self.cmbDevType["state"] = "readonly"
             self.cmbDevIdx["state"] = "readonly"
             self._isOpen = False
-            self.btnSendID10["state"] = tk.DISABLED
         else:
             self._cur_dev_info = self._dev_info[self.cmbDevType.get()]
 
@@ -703,11 +686,8 @@ class ZCAN_Demo(tk.Tk):
         self.ChnInfoUpdate(self._isOpen)
         self.ChnInfoDisplay(self._isOpen)
 
-    # 连接CAN设备的函数。通过按下打开按钮来进行CAN设备的连接
     def BtnOpenCAN_Click(self):
         if self._isChnOpen:
-            # 这个if下的代码是关闭CAN通道的代码
-
             #wait read_thread exit
             self._terminated = True
             self._read_thread.join(0.1)
@@ -719,16 +699,12 @@ class ZCAN_Demo(tk.Tk):
             if self._is_sending:
                 self.btnMsgSend.invoke()
 
-            #Close channel，ResetCAN是ZLG的库函数，用于复位CAN通道
+            #Close channel
             self._zcan.ResetCAN(self._can_handle)
-            # 更新UI界面对应按钮的状态，将关闭按钮变为打开按钮
             self.strvCANCtrl.set("打开")
             self._isChnOpen = False
             self.btnMsgSend["state"] = tk.DISABLED
-            self.btnSendID10["state"] = tk.DISABLED
         else:
-            # 这个else下的代码是打开CAN通道的代码
-
             #Initial channel
            
             chn_cfg = ZCAN_CHANNEL_INIT_CONFIG()
@@ -753,26 +729,24 @@ class ZCAN_Demo(tk.Tk):
             if self._can_handle == INVALID_CHANNEL_HANDLE:
                 messagebox.showerror(title="打开通道", message="初始化通道失败!")
                 return 
-            # StartCAN是ZLG的库函数，用于启动CAN通道
+
             ret = self._zcan.StartCAN(self._can_handle)
             if ret != ZCAN_STATUS_OK: 
                 messagebox.showerror(title="打开通道", message="打开通道失败!")
                 return 
 
-            #start send thread，启动定时发送线程
+            #start send thread
             self._send_thread = PeriodSendThread(self.PeriodSend)
             self._send_thread.start()
 
-            #start receive thread，启动接收报文线程，这个线程在后台不断读取接收缓冲区的报文，没有报文时则进行休眠
+            #start receive thread
             self._terminated = False
             self._read_thread = threading.Thread(None, target=self.MsgReadThreadFunc)
             self._read_thread.start()
-            
-            # 更新UI界面对应按钮的状态，将打开按钮变为关闭按钮
+
             self.strvCANCtrl.set("关闭")
             self._isChnOpen = True 
             self.btnMsgSend["state"] = tk.NORMAL
-            self.btnSendID10["state"] = tk.NORMAL
         self.ChnInfoDisplay(not self._isChnOpen)
 
     def BtnClrCnt_Click(self):
@@ -802,12 +776,9 @@ class ZCAN_Demo(tk.Tk):
         if tmp >= len(self.cmbMsgLen["value"]):
             self.cmbMsgLen.current(len(self.cmbMsgLen["value"]) - 1)            
 
-    # 发送报文的函数，通过按下发送按钮来进行报文的发送
     def BtnSendMsg_Click(self): 
         if not self._is_sending:
-            # 以下代码是开始发送的相关逻辑
             is_canfd_msg = True if self.cmbMsgCANFD.current() > 0 else False
-            # 确定是CAN FD报文还是经典CAN报文
             if is_canfd_msg:
                 msg = ZCAN_TransmitFD_Data()
             else:
@@ -851,48 +822,6 @@ class ZCAN_Demo(tk.Tk):
             self.strvSend.set("停止发送")
         else:
             self.PeriodSendComplete()
-    
-    def BtnSendID10_Click(self):
-        """
-        处理点击 "10" 按钮的事件，发送固定的CAN报文 (ID=0x10)。
-        """
-        # 1. 检查CAN通道是否已打开，如果未打开则不执行任何操作
-        if not self._isChnOpen:
-            messagebox.showwarning(title="发送错误", message="请先打开CAN通道！")
-            return
-
-        # 2. 构建要发送的CAN报文结构体
-        #    根据要求: ID=0x10, 标准帧, 数据帧, DLC=8, 数据全0
-        msg = ZCAN_Transmit_Data()
-        msg.transmit_type = 0 # 0: 正常发送 (Normal Transmit)
-        msg.frame.eff = 0 # 0: 标准帧 (Standard Frame)
-        msg.frame.rtr = 0 # 0: 数据帧 (Data Frame)
-        msg.frame.can_id = 0x10 # 设置帧ID为0x10
-        msg.frame.can_dlc = 8   # 设置数据长度为8
-
-        # 填充数据要发送的数据，模仿UDS诊断服务中的10服务
-        msg.frame.data[0] = 0x02
-        msg.frame.data[1] = 0x10
-        msg.frame.data[2] = 0x03
-        msg.frame.data[3] = 0xCC
-        msg.frame.data[4] = 0xCC
-        msg.frame.data[5] = 0xCC
-        msg.frame.data[6] = 0xCC
-        msg.frame.data[7] = 0xCC
-
-        # 3. 调用底层发送函数发送这一帧报文
-        #    参数: 通道句柄, 报文结构体(或数组), 发送数量(这里是1)
-        ret = self._zcan.Transmit(self._can_handle, msg, 1)
-
-        # 4. (可选但推荐) 处理发送结果并提供反馈
-        if ret == 1: # 假设1代表发送成功 (需要参照zlgcan库的具体定义)
-            # 更新发送计数器并在界面显示
-            self._tx_cnt += 1
-            self.strvTxCnt.set(str(self._tx_cnt))
-            # 在报文显示列表中也显示刚刚发送的这一帧
-            self.ViewDataUpdate( [msg] , 1, is_canfd=False, is_send=True)
-        else:
-            messagebox.showerror(title="发送失败", message="发送CAN报文失败！错误码: " + str(ret))
 
 if __name__ == "__main__":
     demo = ZCAN_Demo()
