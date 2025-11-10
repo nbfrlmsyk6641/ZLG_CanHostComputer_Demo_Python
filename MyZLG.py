@@ -100,7 +100,7 @@ class IAP_Tool_V1(tk.Tk):
 
     def WidgetsInit(self):
         """
-        初始化所有GUI界面组件 (使用修正后的Grid布局)
+        初始化所有GUI界面组件
         """
         # 1. 设备选择
         self.gbDevConnect = tk.LabelFrame(self, height=100, width=GRPBOX_WIDTH, text="设备选择")
