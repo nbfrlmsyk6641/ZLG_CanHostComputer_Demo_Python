@@ -19,7 +19,8 @@ MCU_RESPONSE_ID_APP_ACK = 0xA0
 MCU_RESPONSE_ID_BL_READY = 0xB0 
 MCU_RESPONSE_ID_ERASE_OK = 0xB1 
 MCU_RESPONSE_ID_DATA_ACK = 0xB2 
-MCU_RESPONSE_ID_VERIFY_OK = 0xB3 
+MCU_RESPONSE_ID_VERIFY_OK = 0xB3
+MCU_RESPONSE_ID_ERROR = 0xB4 
 
 # --- 协议中约定的特定数据 ---
 APP_RESET_DATA = (c_ubyte * 8)(0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11)
@@ -38,9 +39,13 @@ CHANNEL_INDEX = 0
 FIRMWARE_FILE_PATH = "Application.bin" 
 APP_MAX_SIZE_BYTES = 300 * 1024 # App分区最大 300KB
 
-# ==============================================================================
+# --- 协议参数 ---
+PACKET_PAYLOAD_SIZE = 6 # 每包传输6字节固件
+DATA_ACK_TIMEOUT_S = 0.5 # 等待数据包ACK的超时时间 (500ms)
+VERIFY_TIMEOUT_S = 10.0 # 等待MCU校验固件的长超时时间 (10s)
+MAX_RETRIES = 3 # 最大重传次数
+
 # --- 2. 辅助函数 ---
-# ==============================================================================
 
 def connect_can_bus(zcan, dev_handle):
     chn_cfg = ZCAN_CHANNEL_INIT_CONFIG()
@@ -77,9 +82,8 @@ def send_can_message(zcan, chn_handle, can_id, data, dlc):
         print(f" > 发送 ID: 0x{can_id:X} 失败!")
         return False
 
-# ==============================================================================
+
 # --- 3. IAP主逻辑 ---
-# ==============================================================================
 
 def main_iap_flow():
     zcan = ZCAN() 
@@ -94,6 +98,9 @@ def main_iap_flow():
     if chn_handle == INVALID_CHANNEL_HANDLE:
         zcan.CloseDevice(handle)
         return
+
+    rcv_msgs = (ZCAN_Receive_Data * 10)() # 创建一个10帧的接收缓冲区
+    ack_num = 0
 
     try:
         # --- 协议第1步：发送“重启”指令给App ---
@@ -152,19 +159,32 @@ def main_iap_flow():
         try:
             print(f" > 正在读取文件: {FIRMWARE_FILE_PATH}")
             with open(FIRMWARE_FILE_PATH, 'rb') as f:
-                firmware_data = f.read()
-            total_size = len(firmware_data)
+                firmware_data = f.read() # firmware_data 是一个 bytes 对象
+            
+            # 1. 检查原始大小
+            original_size = len(firmware_data)
+            print(f" > 原始文件大小: {original_size} 字节")
+            if original_size == 0 or original_size > APP_MAX_SIZE_BYTES:
+                raise Exception(f"固件大小无效 ({original_size} 字节).")
+
+            # 2. 对齐到4字节 (用 0xFF 填充)
+            total_size = original_size # 先设为原始大小
+            if total_size % 4 != 0:
+                padding_needed = 4 - (total_size % 4)
+                firmware_data += b'\xFF' * padding_needed # 在末尾添加 0xFF
+                total_size = len(firmware_data) # 更新 total_size 为对齐后的大小
+                print(f" > (已填充 {padding_needed} 字节 0xFF 以对齐到4字节)")
+            
+            print(f" > 最终发送大小: {total_size} 字节")
+
         except FileNotFoundError:
             raise Exception(f"固件文件 '{FIRMWARE_FILE_PATH}' 未找到!")
-
-        print(f" > 文件大小: {total_size} 字节")
-        if total_size == 0 or total_size > APP_MAX_SIZE_BYTES:
-            raise Exception(f"固件大小无效 ({total_size} 字节). 必须大于0且小于 {APP_MAX_SIZE_BYTES} 字节.")
-
+        
         crc_value = binascii.crc32(firmware_data) & 0xFFFFFFFF
-        print(f" > 文件 CRC32: 0x{crc_value:08X}")
+        
+        print(f" > 文件 CRC32 (基于 {total_size} 字节): 0x{crc_value:08X}")
 
-        # 打包元数据: 4字节大小(小端) + 4字节CRC(小端)
+        # 4. 打包 *填充后* 的大小和CRC
         payload_bytes = struct.pack('<II', total_size, crc_value)
             
         if not send_can_message(zcan, chn_handle, HOST_REQUEST_ID_METADATA, payload_bytes, 8):
@@ -208,12 +228,124 @@ def main_iap_flow():
             raise Exception("擦除超时")
 
         # -----------------------------------------------------------------
-        # --- 协议第5步：(暂存) ---
+        # --- 协议第5、6、7步数据传输循环 ---
         # -----------------------------------------------------------------
-        print("\n--- 成功进入下一阶段 ---")
-        print("下一步：循环发送数据包")
+        print(f"\n--- 步骤 5/6/7: 开始数据传输循环 ---")
+
+        bytes_sent = 0
+        sequence_num = 0
+
+        while bytes_sent < total_size:
+            # a. 准备数据块 (切片)，每次传6字节数据
+            chunk = firmware_data[bytes_sent : bytes_sent + PACKET_PAYLOAD_SIZE]
+            
+            # b. 准备CAN报文 (8字节)
+            payload = bytearray(8) # 创建一个8字节的可修改数组
+            payload[0] = DATA_PACKET_HD # 0xAA
+            payload[1] = sequence_num
+            
+            # c. 填充数据和 0xFF (处理最后一包)
+            payload[2:2+len(chunk)] = chunk
+            if len(chunk) < PACKET_PAYLOAD_SIZE:
+                for i in range(len(chunk), PACKET_PAYLOAD_SIZE):
+                    payload[2+i] = 0xFF
+            
+            # d. 发送与等待ACK (带重传)
+            retry_count = 0
+            ack_received = False
+            
+            while retry_count <= MAX_RETRIES and not ack_received:
+                if retry_count > 0:
+                    print(f" > (重传 {retry_count}/{MAX_RETRIES}) 正在发送数据包 {sequence_num}...")
+                else:
+                    # 打印进度
+                    print(f" > 正在发送数据包 {sequence_num} ({bytes_sent + len(chunk)} / {total_size} 字节)...")
+
+                if not send_can_message(zcan, chn_handle, HOST_REQUEST_ID_DATA, payload, 8):
+                    raise Exception(f"发送数据包 {sequence_num} 失败!")
+                
+                # e. 启动短超时, 等待ACK
+                wait_start_time = time.time()
+                while time.time() - wait_start_time < DATA_ACK_TIMEOUT_S:
+                    rcv_num = zcan.GetReceiveNum(chn_handle, ZCAN_TYPE_CAN)
+                    if rcv_num > 0:
+                        rcv_msgs, act_num = zcan.Receive(chn_handle, rcv_num if rcv_num < 10 else 10)
+                        for i in range(act_num):
+                            msg = rcv_msgs[i].frame
+                            
+                            # 检查是否是我们期待的ACK
+                            if msg.can_id == MCU_RESPONSE_ID_DATA_ACK and msg.data[0] == sequence_num:
+                                ack_received = True
+                                break # 成功收到ACK
+                    if ack_received:
+                        break
+                    time.sleep(0.005) # 5ms轮询
+                
+                if ack_received:
+                    break # 成功，跳出重传循环
+                
+                # 如果执行到这里，说明超时了
+                retry_count += 1
+            
+            # 检查是否所有重传都失败了
+            if not ack_received:
+                raise Exception(f"数据包 {sequence_num} 确认超时 (重传 {MAX_RETRIES} 次后失败).")
+            
+            # 更新循环变量
+            bytes_sent += PACKET_PAYLOAD_SIZE
+            sequence_num = (sequence_num + 1) % 256 # 序列号 (0-255) 自动回绕
         
-        time.sleep(1) # 短暂暂停
+        print("\n*** 成功！所有数据包发送完毕。 ***")
+    
+        # -----------------------------------------------------------------
+        # --- 【新增】协议第8步：发送传输结束 (EOT) ---
+        # -----------------------------------------------------------------
+        print(f"\n--- 步骤 8: 发送传输结束 (EOT) (ID: 0x{HOST_REQUEST_ID_EOT:X}) ---")
+        eot_payload = (c_ubyte * 8)(EOT_PACKET_ED, 0, 0, 0, 0, 0, 0, 0)
+        if not send_can_message(zcan, chn_handle, HOST_REQUEST_ID_EOT, eot_payload, 8):
+             raise Exception("发送EOT报文失败!")
+        print(f" > 已发送EOT。")
+        
+        # -----------------------------------------------------------------
+        # --- 【新增】协议第9步：等待最终校验结果 ---
+        # -----------------------------------------------------------------
+        print(f"\n--- 步骤 9: 等待MCU最终校验... (监听 0x{MCU_RESPONSE_ID_VERIFY_OK:X} / 0x{MCU_RESPONSE_ID_ERROR:X}) ---")
+        
+        verify_timeout = VERIFY_TIMEOUT_S
+        start_time = time.time()
+        final_result = None # None: 等待, True: 成功, False: 失败
+
+        while time.time() - start_time < verify_timeout:
+            rcv_num = zcan.GetReceiveNum(chn_handle, ZCAN_TYPE_CAN)
+            if rcv_num > 0:
+                rcv_msgs, act_num = zcan.Receive(chn_handle, rcv_num if rcv_num < 10 else 10)
+                for i in range(act_num):
+                    msg = rcv_msgs[i].frame
+                    print(f" < 收到报文 ID: 0x{msg.can_id:X}")
+                    
+                    # 检查是否是“校验成功”报文
+                    if msg.can_id == MCU_RESPONSE_ID_VERIFY_OK:
+                        final_result = True
+                        break
+                    
+                    # 检查是否是“失败重试”报文 (0xB0 或 0xB4)
+                    if msg.can_id == MCU_RESPONSE_ID_BL_READY or msg.can_id == MCU_RESPONSE_ID_ERROR:
+                        final_result = False
+                        break
+            if final_result is not None:
+                break
+            time.sleep(0.01)
+
+        # 最终裁决
+        if final_result == True:
+            print("\n==============================================")
+            print("  *** 固件更新成功! ***")
+            print("  MCU正在重启进入新App...")
+            print("==============================================")
+        elif final_result == False:
+            raise Exception("更新失败：MCU校验CRC不匹配，或报告了0xB4错误。")
+        else: # final_result is None
+            raise Exception(f"更新失败：等待MCU最终校验超时 ({verify_timeout}秒)。")
 
 
     except Exception as e:
