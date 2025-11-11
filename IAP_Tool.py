@@ -321,7 +321,7 @@ def main_iap_flow():
                 rcv_msgs, act_num = zcan.Receive(chn_handle, rcv_num if rcv_num < 10 else 10)
                 for i in range(act_num):
                     msg = rcv_msgs[i].frame
-                    print(f" < 收到报文 ID: 0x{msg.can_id:X}")
+                    print(f" < 收到报文 ID: 0x{msg.can_id:X}, 报文内容: {[msg.data[j] for j in range(msg.can_dlc)]}")
                     
                     # 检查是否是“校验成功”报文
                     if msg.can_id == MCU_RESPONSE_ID_VERIFY_OK:
