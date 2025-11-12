@@ -3,10 +3,9 @@
 import time
 import os
 import binascii
-import struct # 导入struct库用于打包
-from zlgcan import * # ==============================================================================
-# --- 1. 协议常量定义 ---
-# ==============================================================================
+import struct 
+from zlgcan import * 
+# 1. 协议常量定义
 
 # --- 上位机 -> MCU 的CAN ID ---
 HOST_REQUEST_ID_APP_RESET = 0xC0
@@ -14,7 +13,7 @@ HOST_REQUEST_ID_METADATA = 0xC1
 HOST_REQUEST_ID_DATA = 0xC2 
 HOST_REQUEST_ID_EOT = 0xC3 
 
-# --- MCU -> 上位机 的CAN ID ---
+# MCU -> 上位机 的CAN ID
 MCU_RESPONSE_ID_APP_ACK = 0xA0 
 MCU_RESPONSE_ID_BL_READY = 0xB0 
 MCU_RESPONSE_ID_ERASE_OK = 0xB1 
@@ -22,50 +21,65 @@ MCU_RESPONSE_ID_DATA_ACK = 0xB2
 MCU_RESPONSE_ID_VERIFY_OK = 0xB3
 MCU_RESPONSE_ID_ERROR = 0xB4 
 
-# --- 协议中约定的特定数据 ---
+# 协议中约定的特定数据
 APP_RESET_DATA = (c_ubyte * 8)(0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11)
 BL_READY_DATA = (c_ubyte * 8)(0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22)
 BL_ERASE_OK_DATA = (c_ubyte * 8)(0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33)
 
+# 数据包帧头标识
 DATA_PACKET_HD = 0xAA 
 EOT_PACKET_ED = 0xBB 
 
-# --- 工具配置 ---
+# 工具配置（根据实际使用的CAN盒配置）
 DEVICE_TYPE = ZCAN_USBCAN1
 DEVICE_INDEX = 0
 CHANNEL_INDEX = 0
 
-# --- 固件文件配置 ---
+# 固件文件配置
 FIRMWARE_FILE_PATH = "Application.bin" 
-APP_MAX_SIZE_BYTES = 300 * 1024 # App分区最大 300KB
+APP_MAX_SIZE_BYTES = 300 * 1024 # App分区最大 300KB（根据实际分配情况设置）
 
-# --- 协议参数 ---
+# 协议参数
 PACKET_PAYLOAD_SIZE = 6 # 每包传输6字节固件
 DATA_ACK_TIMEOUT_S = 0.5 # 等待数据包ACK的超时时间 (500ms)
 VERIFY_TIMEOUT_S = 10.0 # 等待MCU校验固件的长超时时间 (10s)
 MAX_RETRIES = 3 # 最大重传次数
 
-# --- 2. 辅助函数 ---
+# 2. 辅助函数
 
+# 配置CAN通道的函数
 def connect_can_bus(zcan, dev_handle):
+
+    # 配置并启动CAN通道
     chn_cfg = ZCAN_CHANNEL_INIT_CONFIG()
+
+    # 设置CAN参数
     chn_cfg.can_type = ZCAN_TYPE_CAN
+
+    # 设置波特率为1Mbps，MCU端设置要与这里一致
     ret = zcan.ZCAN_SetValue(dev_handle, "0/canfd_abit_baud_rate", "1000000")
+
     if ret != ZCAN_STATUS_OK:
         print(f"错误: 设置波特率(1Mbps)失败!")
         return INVALID_CHANNEL_HANDLE
+    
     chn_cfg.config.can.mode = 0
+
     chn_handle = zcan.InitCAN(dev_handle, CHANNEL_INDEX, chn_cfg)
+
     if chn_handle == INVALID_CHANNEL_HANDLE:
         print(f"错误: 初始化CAN通道 {CHANNEL_INDEX} 失败!")
         return INVALID_CHANNEL_HANDLE
+    
     ret = zcan.StartCAN(chn_handle)
+
     if ret != ZCAN_STATUS_OK:
         print(f"错误: 启动CAN通道 {CHANNEL_INDEX} 失败!")
         return INVALID_CHANNEL_HANDLE
     print(f"CAN通道 {CHANNEL_INDEX} 已启动 (1Mbps)")
     return chn_handle
 
+# 发送CAN报文的函数
 def send_can_message(zcan, chn_handle, can_id, data, dlc):
     msg = ZCAN_Transmit_Data()
     msg.transmit_type = 0
@@ -86,15 +100,22 @@ def send_can_message(zcan, chn_handle, can_id, data, dlc):
 # --- 3. IAP主逻辑 ---
 
 def main_iap_flow():
+
+    # 加载ZCAN库
     zcan = ZCAN() 
+
+    # 打开目前连接的硬件设备，将设备句柄保存在 handle 变量中
     handle = zcan.OpenDevice(DEVICE_TYPE, DEVICE_INDEX, 0)
+
     if handle == INVALID_DEVICE_HANDLE:
         print("错误: 打开设备失败!")
         return
 
     print(f"设备已打开, 句柄: {handle}")
 
+    # 连接并启动CAN通道，配置CAN模式、波特率等
     chn_handle = connect_can_bus(zcan, handle)
+
     if chn_handle == INVALID_CHANNEL_HANDLE:
         zcan.CloseDevice(handle)
         return
@@ -102,21 +123,28 @@ def main_iap_flow():
     rcv_msgs = (ZCAN_Receive_Data * 10)() # 创建一个10帧的接收缓冲区
     ack_num = 0
 
+    # 以下是IAP协议的主要流程，按照顺序执行
     try:
         # --- 协议第1步：发送“重启”指令给App ---
         print(f"\n--- 步骤 1: 请求App重启进入Bootloader (发送 ID: 0x{HOST_REQUEST_ID_APP_RESET:X}) ---")
+
         if not send_can_message(zcan, chn_handle, HOST_REQUEST_ID_APP_RESET, APP_RESET_DATA, 8):
              raise Exception("发送重启指令失败")
+        
         print(f" > 已发送“重启”指令 (ID: 0x{HOST_REQUEST_ID_APP_RESET:X})")
 
 
         # --- 协议第2步：等待Bootloader“就绪”响应 ---
         print(f"\n--- 步骤 2: 等待Bootloader就绪 (监听 ID: 0x{MCU_RESPONSE_ID_BL_READY:X}) ---")
+
         timeout = 5.0 # 5秒总超时
+
         start_time = time.time()
+
         bootloader_ready = False
         app_ack_received = False
 
+        # 给Bootloader一些时间来重启，等待时间为5s
         while time.time() - start_time < timeout:
             rcv_num = zcan.GetReceiveNum(chn_handle, ZCAN_TYPE_CAN)
             
@@ -158,17 +186,21 @@ def main_iap_flow():
         
         try:
             print(f" > 正在读取文件: {FIRMWARE_FILE_PATH}")
+
             with open(FIRMWARE_FILE_PATH, 'rb') as f:
                 firmware_data = f.read() # firmware_data 是一个 bytes 对象
             
             # 1. 检查原始大小
             original_size = len(firmware_data)
+
             print(f" > 原始文件大小: {original_size} 字节")
+
             if original_size == 0 or original_size > APP_MAX_SIZE_BYTES:
                 raise Exception(f"固件大小无效 ({original_size} 字节).")
 
             # 2. 对齐到4字节 (用 0xFF 填充)
             total_size = original_size # 先设为原始大小
+
             if total_size % 4 != 0:
                 padding_needed = 4 - (total_size % 4)
                 firmware_data += b'\xFF' * padding_needed # 在末尾添加 0xFF
@@ -277,6 +309,7 @@ def main_iap_flow():
                             if msg.can_id == MCU_RESPONSE_ID_DATA_ACK and msg.data[0] == sequence_num:
                                 ack_received = True
                                 break # 成功收到ACK
+
                     if ack_received:
                         break
                     time.sleep(0.005) # 5ms轮询
@@ -301,9 +334,12 @@ def main_iap_flow():
         # --- 【新增】协议第8步：发送传输结束 (EOT) ---
         # -----------------------------------------------------------------
         print(f"\n--- 步骤 8: 发送传输结束 (EOT) (ID: 0x{HOST_REQUEST_ID_EOT:X}) ---")
+
         eot_payload = (c_ubyte * 8)(EOT_PACKET_ED, 0, 0, 0, 0, 0, 0, 0)
+
         if not send_can_message(zcan, chn_handle, HOST_REQUEST_ID_EOT, eot_payload, 8):
              raise Exception("发送EOT报文失败!")
+        
         print(f" > 已发送EOT。")
         
         # -----------------------------------------------------------------
