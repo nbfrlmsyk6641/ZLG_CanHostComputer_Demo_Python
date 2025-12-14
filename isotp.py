@@ -8,6 +8,10 @@ ISOTP_FRAME_FF = 0x10 # 首帧
 ISOTP_FRAME_CF = 0x20 # 连续帧
 ISOTP_FRAME_FC = 0x30 # 流控帧
 
+# 网络层定时参数
+ISOTP_TIMEOUT_N_BS = 2.0
+ISOTP_TIMEOUT_N_CR = 2.0
+
 # ISO-TP 协议实现类
 class IsoTpLayer:
     def __init__(self, zcan_lib, chn_handle, tx_id, rx_id):
@@ -22,7 +26,7 @@ class IsoTpLayer:
         self.chn = chn_handle
         self.tx_id = tx_id
         self.rx_id = rx_id
-        self.timeout = 2.0 # 等待流控帧超时时间 (秒)
+        self.timeout_n_bs = ISOTP_TIMEOUT_N_BS
 
     def _send_raw_frame(self, data_bytes):
         """发送一帧原始 CAN 报文 (8字节)"""
@@ -48,7 +52,8 @@ class IsoTpLayer:
     def _wait_flow_control(self):
         """等待 MCU 回复流控帧 (FC)"""
         start_time = time.time()
-        while time.time() - start_time < self.timeout:
+
+        while time.time() - start_time < self.timeout_n_bs:
             # 查询缓冲区 
             num = self.zcan.GetReceiveNum(self.chn, ZCAN_TYPE_CAN)
             if num > 0:
@@ -65,7 +70,8 @@ class IsoTpLayer:
                         return True, fs, bs, st_min
             
             time.sleep(0.002) # 避免 CPU 满载
-            
+
+        print(f"[ISO-TP Error] N_Bs Timeout! (MCU 未在 {self.timeout_n_bs}s 内回复 FC)")    
         return False, 0, 0, 0
 
     def send(self, data):
@@ -127,12 +133,16 @@ class IsoTpLayer:
             elif 0xF1 <= st_min <= 0xF9:
                 delay_s = (st_min - 0xF0) * 0.0001 # 100微秒转秒
             
+            block_size = bs
+            
             print(f"[ISO-TP] 收到流控: BS={bs}, STmin={st_min} (延时 {delay_s:.4f}s)")
+
 
             # 3. 发送连续帧 (CF)
             # --------------------------------
             offset = 6 # 已经发了6个
             sn = 1     # 序列号从1开始
+            frame_count_in_block = 0
             
             while offset < length:
                 # 截取最多 7 个字节
@@ -147,6 +157,20 @@ class IsoTpLayer:
                 # 变量更新
                 offset += len(chunk)
                 sn = (sn + 1) & 0x0F # 0-15 循环
+                frame_count_in_block += 1
+
+                if block_size > 0 and frame_count_in_block >= block_size:
+                    print(f"[ISO-TP] 已发送 {frame_count_in_block} 帧，等待中间流控...")
+
+                    ok, fs, new_bs, new_st = self._wait_flow_control()
+                    if not ok: return False
+                    if fs != 0: return False
+
+                    block_size = new_bs
+                    delay_s = self._calc_st_min(new_st)
+                    frame_count_in_block = 0
+
+                    continue
                 
                 # 执行 MCU 要求的延时 (关键!)
                 if delay_s > 0:
@@ -154,3 +178,11 @@ class IsoTpLayer:
             
             print("[ISO-TP] 传输完成")
             return True
+    
+    def _calc_st_min(self, st_min_val):
+        """辅助函数：解析 STmin"""
+        if st_min_val <= 0x7F:
+            return st_min_val / 1000.0 # ms
+        elif 0xF1 <= st_min_val <= 0xF9:
+            return (st_min_val - 0xF0) * 0.0001 # 100us
+        return 0.1 # 默认安全值
